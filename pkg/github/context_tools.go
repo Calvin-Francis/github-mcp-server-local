@@ -2,10 +2,14 @@ package github
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"time"
 
 	ghErrors "github.com/github/github-mcp-server/pkg/errors"
 	"github.com/github/github-mcp-server/pkg/translations"
+	"github.com/go-viper/mapstructure/v2"
+	"github.com/google/go-github/v79/github"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/shurcooL/githubv4"
@@ -101,6 +105,14 @@ type TeamInfo struct {
 type OrganizationTeams struct {
 	Org   string     `json:"org"`
 	Teams []TeamInfo `json:"teams"`
+}
+
+type OutUser struct {
+	Login     string `json:"login"`
+	ID        string `json:"id"`
+	AvatarURL string `json:"avatar_url"`
+	Type      string `json:"type"`
+	SiteAdmin bool   `json:"site_admin"`
 }
 
 func GetTeams(getClient GetClientFn, getGQLClient GetGQLClientFn, t translations.TranslationHelperFunc) (mcp.Tool, server.ToolHandlerFunc) {
@@ -247,5 +259,174 @@ func GetTeamMembers(getGQLClient GetGQLClientFn, t translations.TranslationHelpe
 			}
 
 			return MarshalledTextResult(members), nil
+		}
+}
+
+func GetOrgMembers(getClient GetClientFn, t translations.TranslationHelperFunc) (mcp.Tool, server.ToolHandlerFunc) {
+	return mcp.NewTool("get_org_members",
+			mcp.WithDescription(t("TOOL_GET_ORG_MEMBERS_DESCRIPTION", "Get member users of a specific organization. Returns a list of user objects with fields: login, id, avatar_url, type. Limited to organizations accessible with current credentials")),
+			mcp.WithToolAnnotation(mcp.ToolAnnotation{
+				Title:        t("TOOL_GET_ORG_MEMBERS_TITLE", "Get organization members"),
+				ReadOnlyHint: ToBoolPtr(true),
+			}),
+			mcp.WithString("org",
+				mcp.Required(),
+				mcp.Description("Organization login (owner) to get members for."),
+			),
+			mcp.WithNumber("per_page",
+				mcp.Description("Results per page (max 100)"),
+			),
+			mcp.WithNumber("page",
+				mcp.Description("Page number for pagination"),
+			),
+			mcp.WithString("role",
+				mcp.Description("Filter by role: all, admin, member"),
+			),
+		),
+		func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			var params struct {
+				Org     string `mapstructure:"org"`
+				PerPage int32  `mapstructure:"per_page"`
+				Page    int32  `mapstructure:"page"`
+				Role    string `mapstructure:"role"`
+			}
+			if err := mapstructure.Decode(request.GetArguments(), &params); err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			org := params.Org
+			perPage := params.PerPage
+			page := params.Page
+			role := params.Role
+			if org == "" {
+				return mcp.NewToolResultError("org is required"), nil
+			}
+
+			// Defaults
+			if perPage <= 0 {
+				perPage = 30
+			}
+			if perPage > 100 {
+				perPage = 100
+			}
+			if page <= 0 {
+				page = 1
+			}
+			if role == "" {
+				role = "all"
+			}
+			role = strings.ToLower(role)
+			if role != "all" && role != "admin" && role != "member" {
+				role = "all"
+			}
+
+			client, err := getClient(ctx)
+			if err != nil {
+				return mcp.NewToolResultErrorFromErr("failed to get GitHub client", err), nil
+			}
+
+			// Use Organizations.ListMembers with pagination
+			opts := &github.ListMembersOptions{
+				Role: role,
+				ListOptions: github.ListOptions{
+					PerPage: int(perPage),
+					Page:    int(page),
+				},
+			}
+
+			users, resp, err := client.Organizations.ListMembers(ctx, org, opts)
+			if err != nil {
+				return ghErrors.NewGitHubAPIErrorResponse(ctx, "Failed to get organization members", resp, err), nil
+			}
+
+			var members []OutUser
+			for _, u := range users {
+				members = append(members, OutUser{
+					Login:     u.GetLogin(),
+					ID:        fmt.Sprintf("%v", u.GetID()),
+					AvatarURL: u.GetAvatarURL(),
+					Type:      u.GetType(),
+					SiteAdmin: u.GetSiteAdmin(),
+				})
+			}
+
+			return MarshalledTextResult(members), nil
+		}
+}
+
+func ListOutsideCollaborators(getClient GetClientFn, t translations.TranslationHelperFunc) (mcp.Tool, server.ToolHandlerFunc) {
+	return mcp.NewTool("list_outside_collaborators",
+			mcp.WithDescription(t("TOOL_LIST_OUTSIDE_COLLABORATORS_DESCRIPTION", "List all outside collaborators of an organization (users with access to organization repositories but not members).")),
+			mcp.WithToolAnnotation(mcp.ToolAnnotation{
+				Title:        t("TOOL_LIST_OUTSIDE_COLLABORATORS_TITLE", "List outside collaborators"),
+				ReadOnlyHint: ToBoolPtr(true),
+			}),
+			mcp.WithString("org",
+				mcp.Required(),
+				mcp.Description("The organization name"),
+			),
+			mcp.WithNumber("per_page",
+				mcp.Description("Results per page (max 100)"),
+			),
+			mcp.WithNumber("page",
+				mcp.Description("Page number for pagination"),
+			),
+		),
+		func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			var params struct {
+				Org     string `mapstructure:"org"`
+				PerPage int32  `mapstructure:"per_page"`
+				Page    int32  `mapstructure:"page"`
+			}
+			if err := mapstructure.Decode(request.GetArguments(), &params); err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			org := params.Org
+			perPage := params.PerPage
+			page := params.Page
+			if org == "" {
+				return mcp.NewToolResultError("org is required"), nil
+			}
+
+			// Defaults
+			if perPage <= 0 {
+				perPage = 30
+			}
+			if perPage > 100 {
+				perPage = 100
+			}
+			if page <= 0 {
+				page = 1
+			}
+
+			client, err := getClient(ctx)
+			if err != nil {
+				return mcp.NewToolResultErrorFromErr("failed to get GitHub client", err), nil
+			}
+
+			// Use Organizations.ListOutsideCollaborators with pagination
+			opts := &github.ListOutsideCollaboratorsOptions{
+				ListOptions: github.ListOptions{
+					PerPage: int(perPage),
+					Page:    int(page),
+				},
+			}
+
+			users, resp, err := client.Organizations.ListOutsideCollaborators(ctx, org, opts)
+			if err != nil {
+				return ghErrors.NewGitHubAPIErrorResponse(ctx, "Failed to list outside collaborators", resp, err), nil
+			}
+
+			var collaborators []OutUser
+			for _, u := range users {
+				collaborators = append(collaborators, OutUser{
+					Login:     u.GetLogin(),
+					ID:        fmt.Sprintf("%v", u.GetID()),
+					AvatarURL: u.GetAvatarURL(),
+					Type:      u.GetType(),
+					SiteAdmin: u.GetSiteAdmin(),
+				})
+			}
+
+			return MarshalledTextResult(collaborators), nil
 		}
 }

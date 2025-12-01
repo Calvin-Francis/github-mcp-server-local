@@ -313,6 +313,8 @@ func DefaultToolsetGroup(readOnly bool, getClient GetClientFn, getGQLClient GetG
 			toolsets.NewServerTool(GetMe(getClient, t)),
 			toolsets.NewServerTool(GetTeams(getClient, getGQLClient, t)),
 			toolsets.NewServerTool(GetTeamMembers(getGQLClient, t)),
+			toolsets.NewServerTool(GetOrgMembers(getClient, t)),
+			toolsets.NewServerTool(ListOutsideCollaborators(getClient, t)),
 		)
 
 	gists := toolsets.NewToolset(ToolsetMetadataGists.ID, ToolsetMetadataGists.Description).
